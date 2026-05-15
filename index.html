@@ -1,0 +1,1115 @@
+import { useState, useEffect, useCallback, useMemo, useRef, memo } from "react";
+import emailjs from "@emailjs/browser";
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+const SERVICE_ID = "service_169phpn";
+const TEMPLATE_ID = "template_8qnnrru";
+const PUBLIC_KEY  = "kFK9eBXqTg441PxLX";
+const STATUS_OPTIONS = ["Terminé", "À vérifier", "Amna"];
+
+const STATUS_COLORS = {
+  "Terminé":    { bg: "#0f6e56", text: "#e1f5ee" },
+  "À vérifier": { bg: "#854f0b", text: "#faeeda" },
+  "Amna":       { bg: "#533ab7", text: "#eeedfe" },
+};
+
+const TEMPLATES = {
+  netflix: {
+    label: "Netflix",
+    icon: "📺",
+    generate: ({ email, password, profileName, pin }) => {
+      const fullEmail    = `${email}@gmail.com`;
+      const fullPassword = `${password}098`;
+      const pinLine      = pin
+        ? `\n8- Ensuite, il demandera un PIN :\n\nUser-Pin : ${pin}\n`
+        : "";
+      return `NB : 1 profil = 1 appareil ⚠️
+
+1- Installe l'application Netflix
+
+2- Ouvre l'application
+
+3- Appuie sur le bouton "Sign in" ou "S'identifier"
+
+4- Entre l'email du compte :
+
+Email : ${fullEmail}
+
+Puis appuie sur Continuer.
+
+5- Quand Netflix demande un code d'identification :
+Appuie sur « Obtenir de l'aide » puis sur « Utiliser le mot de passe ».
+
+6- Entre le mot de passe :
+
+Mot de passe 🔐 : ${fullPassword}
+
+7- Sélectionne le profil :
+
+Profil : ${profileName}
+${pinLine}
+Tu peux commencer !
+
+🚫 Fin d'abonnement
+
+---
+
+🔔 Renouvelle avant la date limite pour conserver ton compte actuel.`;
+    },
+  },
+  spotify: {
+    label: "Spotify",
+    icon: "🎵",
+    generate: ({ email, password }) => {
+      return `1- Installe l'application Spotify
+
+2- Appuie sur "Se connecter"
+
+3- Connecte-toi avec :
+
+Email : ${email}@gmail.com
+Mot de passe 🔐 : ${password}098
+
+Tu peux écouter !
+
+🚫 Fin d'abonnement
+
+---
+
+🔔 Renouvelle avant la date limite.`;
+    },
+  },
+};
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+const stripSuffix = (value = "", suffix = "") =>
+  value.endsWith(suffix) ? value.slice(0, -suffix.length) : value;
+
+// ─── localStorage helpers ─────────────────────────────────────────────────────
+const LS_ACCOUNTS = "vaultgen_accounts";
+const LS_USER     = "vaultgen_user";
+
+const loadAccounts = () => {
+  try { const r = localStorage.getItem(LS_ACCOUNTS); return r ? JSON.parse(r) : []; }
+  catch { return []; }
+};
+const saveAccountsLS = (a) => {
+  try { localStorage.setItem(LS_ACCOUNTS, JSON.stringify(a)); } catch {}
+};
+const loadUser = () => {
+  try { const r = localStorage.getItem(LS_USER); return r ? JSON.parse(r) : null; }
+  catch { return null; }
+};
+
+// ─── Styles ───────────────────────────────────────────────────────────────────
+const glassStyle = {
+  background:    "rgba(255,255,255,0.04)",
+  border:        "1px solid rgba(255,255,255,0.08)",
+  borderRadius:  "16px",
+  backdropFilter:"blur(20px)",
+};
+
+const inputStyle = {
+  width:        "100%",
+  background:   "rgba(255,255,255,0.06)",
+  border:       "1px solid rgba(255,255,255,0.1)",
+  borderRadius: "10px",
+  padding:      "12px 16px",
+  color:        "#f0f0f0",
+  fontSize:     "15px",
+  outline:      "none",
+  transition:   "border-color 0.2s, box-shadow 0.2s",
+  boxSizing:    "border-box",
+};
+
+const btnPrimary = {
+  background:    "linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%)",
+  border:        "none",
+  borderRadius:  "10px",
+  color:         "#fff",
+  fontSize:      "15px",
+  fontWeight:    600,
+  padding:       "12px 28px",
+  cursor:        "pointer",
+  transition:    "opacity 0.2s, transform 0.15s",
+  letterSpacing: "0.01em",
+};
+
+const btnGhost = {
+  background:   "rgba(255,255,255,0.06)",
+  border:       "1px solid rgba(255,255,255,0.1)",
+  borderRadius: "10px",
+  color:        "#ccc",
+  fontSize:     "14px",
+  padding:      "10px 20px",
+  cursor:       "pointer",
+  transition:   "background 0.2s",
+};
+
+// ─── Hook: responsive ─────────────────────────────────────────────────────────
+function useIsMobile(bp = 768) {
+  const [v, setV] = useState(() => window.innerWidth < bp);
+  useEffect(() => {
+    const h = () => setV(window.innerWidth < bp);
+    window.addEventListener("resize", h);
+    return () => window.removeEventListener("resize", h);
+  }, [bp]);
+  return v;
+}
+
+// ─── Hook: debounce ───────────────────────────────────────────────────────────
+function useDebounce(value, delay = 300) {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const t = setTimeout(() => setDebounced(value), delay);
+    return () => clearTimeout(t);
+  }, [value, delay]);
+  return debounced;
+}
+
+// ─── Hook: keyboard shortcuts ─────────────────────────────────────────────────
+function useKeyboardShortcuts(shortcuts) {
+  useEffect(() => {
+    const handler = (e) => {
+      if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" || e.target.tagName === "SELECT") {
+        if (e.key === "Escape") e.target.blur();
+        return;
+      }
+      for (const { key, ctrl, callback } of shortcuts) {
+        if (e.key === key && (!ctrl || (e.ctrlKey || e.metaKey))) {
+          e.preventDefault();
+          callback();
+          return;
+        }
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [shortcuts]);
+}
+
+// ─── Toast system (with undo support) ────────────────────────────────────────
+function ToastContainer({ toasts }) {
+  return (
+    <div style={{
+      position: "fixed", bottom: 24, right: 24, zIndex: 9999,
+      display: "flex", flexDirection: "column", gap: 10, pointerEvents: "none",
+    }}>
+      {toasts.map(t => (
+        <div key={t.id} style={{
+          background:   t.type === "error" ? "rgba(226,75,74,0.95)" : t.type === "warning" ? "rgba(133,79,11,0.95)" : t.type === "undo" ? "rgba(30,30,50,0.97)" : "rgba(15,110,86,0.95)",
+          border:       "1px solid rgba(255,255,255,0.15)",
+          borderRadius: 12,
+          padding:      "12px 18px",
+          color:        "#fff",
+          fontSize:     14,
+          fontWeight:   500,
+          minWidth:     220,
+          boxShadow:    "0 8px 32px rgba(0,0,0,0.4)",
+          animation:    "slideIn 0.25s ease",
+          display:      "flex", alignItems: "center", gap: 10,
+          pointerEvents: t.onUndo ? "all" : "none",
+        }}>
+          <span style={{ fontSize: 16 }}>{t.type === "error" ? "⚠" : t.type === "warning" ? "⏳" : t.type === "undo" ? "🗑" : "✓"}</span>
+          <span style={{ flex: 1 }}>{t.message}</span>
+          {t.onUndo && (
+            <button
+              onClick={t.onUndo}
+              style={{ background: "rgba(255,255,255,0.15)", border: "1px solid rgba(255,255,255,0.25)", borderRadius: 6, color: "#fff", fontSize: 13, padding: "4px 10px", cursor: "pointer", fontWeight: 600, whiteSpace: "nowrap" }}
+            >
+              Annuler
+            </button>
+          )}
+        </div>
+      ))}
+      <style>{`@keyframes slideIn { from { transform: translateX(40px); opacity:0; } to { transform: translateX(0); opacity:1; } }`}</style>
+    </div>
+  );
+}
+
+function useToast() {
+  const [toasts, setToasts] = useState([]);
+
+  const dismiss = useCallback((id) => {
+    setToasts(prev => prev.filter(t => t.id !== id));
+  }, []);
+
+  const push = useCallback((message, type = "success", duration = 3000, onUndo = null) => {
+    const id = Date.now() + Math.random();
+    setToasts(prev => [...prev, { id, message, type, onUndo }]);
+    const timer = setTimeout(() => dismiss(id), duration);
+    return { id, timer };
+  }, [dismiss]);
+
+  return { toasts, push, dismiss };
+}
+
+// ─── Confirm Dialog ───────────────────────────────────────────────────────────
+function ConfirmDialog({ message, onConfirm, onCancel }) {
+  useEffect(() => {
+    const handler = (e) => { if (e.key === "Escape") onCancel(); if (e.key === "Enter") onConfirm(); };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onConfirm, onCancel]);
+
+  return (
+    <div style={{
+      position: "fixed", inset: 0, zIndex: 1000,
+      background: "rgba(0,0,0,0.6)", display: "flex",
+      alignItems: "center", justifyContent: "center",
+      backdropFilter: "blur(4px)",
+    }}>
+      <div style={{ ...glassStyle, padding: 32, maxWidth: 360, width: "90%", textAlign: "center" }}>
+        <div style={{ fontSize: 36, marginBottom: 16 }}>🗑️</div>
+        <p style={{ color: "#e0e0e0", fontSize: 16, marginBottom: 8 }}>{message}</p>
+        <p style={{ color: "#666", fontSize: 13, marginBottom: 28 }}>Appuie sur Entrée pour confirmer, Échap pour annuler.</p>
+        <div style={{ display: "flex", gap: 12, justifyContent: "center" }}>
+          <button onClick={onCancel} style={{ ...btnGhost, padding: "10px 24px" }}>Annuler</button>
+          <button onClick={onConfirm} style={{ ...btnPrimary, background: "linear-gradient(135deg, #c0392b, #e74c3c)", padding: "10px 24px" }}>
+            Supprimer
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Auth Screen ──────────────────────────────────────────────────────────────
+function AuthScreen({ onLogin }) {
+  const [mode, setMode]         = useState("login");
+  const [email, setEmail]       = useState("");
+  const [password, setPassword] = useState("");
+  const [name, setName]         = useState("");
+  const [loading, setLoading]   = useState(false);
+  const [error, setError]       = useState("");
+
+  const handleSubmit = async () => {
+    if (!email || !password) { setError("Veuillez remplir tous les champs."); return; }
+    setLoading(true); setError("");
+    await new Promise(r => setTimeout(r, 700));
+    setLoading(false);
+    const userData = { email, name: name || email.split("@")[0] };
+    localStorage.setItem(LS_USER, JSON.stringify(userData));
+    onLogin(userData);
+  };
+
+  return (
+    <div style={{
+      minHeight: "100vh",
+      background: "linear-gradient(135deg, #0a0a0f 0%, #0d0d1a 40%, #0a0f1a 100%)",
+      display: "flex", alignItems: "center", justifyContent: "center",
+      fontFamily: "'Geist Sans', 'Inter', system-ui, sans-serif",
+      position: "relative", overflow: "hidden",
+    }}>
+      <div style={{ position:"absolute", top:"10%", left:"15%", width:400, height:400, borderRadius:"50%", background:"radial-gradient(circle, rgba(79,70,229,0.15) 0%, transparent 70%)", pointerEvents:"none" }} />
+      <div style={{ position:"absolute", bottom:"15%", right:"10%", width:300, height:300, borderRadius:"50%", background:"radial-gradient(circle, rgba(124,58,237,0.12) 0%, transparent 70%)", pointerEvents:"none" }} />
+
+      <div style={{ ...glassStyle, padding:"48px 40px", width:"100%", maxWidth:420, position:"relative", zIndex:1, margin:"0 16px" }}>
+        <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:32 }}>
+          <div style={{ width:36, height:36, borderRadius:10, background:"linear-gradient(135deg, #4f46e5, #7c3aed)", display:"flex", alignItems:"center", justifyContent:"center" }}>
+            <span style={{ fontSize:18 }}>🔐</span>
+          </div>
+          <span style={{ color:"#f0f0f0", fontSize:18, fontWeight:600, letterSpacing:"-0.02em" }}>VaultGen</span>
+        </div>
+
+        <h1 style={{ color:"#f0f0f0", fontSize:26, fontWeight:700, margin:"0 0 6px", letterSpacing:"-0.03em" }}>
+          {mode === "login" ? "Bienvenue" : "Créer un compte"}
+        </h1>
+        <p style={{ color:"#888", fontSize:14, margin:"0 0 32px" }}>
+          {mode === "login" ? "Connectez-vous pour gérer vos comptes" : "Commencez à gérer vos identifiants"}
+        </p>
+
+        {error && (
+          <div style={{ background:"rgba(226,75,74,0.15)", border:"1px solid rgba(226,75,74,0.3)", borderRadius:8, padding:"10px 14px", color:"#f09595", fontSize:13, marginBottom:16 }}>
+            {error}
+          </div>
+        )}
+
+        <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
+          {mode === "signup" && (
+            <div>
+              <label style={{ color:"#aaa", fontSize:13, marginBottom:6, display:"block" }}>Nom complet</label>
+              <input style={inputStyle} placeholder="Votre nom" value={name} onChange={e => setName(e.target.value)} />
+            </div>
+          )}
+          <div>
+            <label style={{ color:"#aaa", fontSize:13, marginBottom:6, display:"block" }}>Email</label>
+            <input style={inputStyle} type="email" placeholder="vous@exemple.com" value={email} onChange={e => setEmail(e.target.value)} />
+          </div>
+          <div>
+            <label style={{ color:"#aaa", fontSize:13, marginBottom:6, display:"block" }}>Mot de passe</label>
+            <input style={inputStyle} type="password" placeholder="••••••••" value={password}
+              onChange={e => setPassword(e.target.value)}
+              onKeyDown={e => e.key === "Enter" && handleSubmit()} />
+          </div>
+        </div>
+
+        <button style={{ ...btnPrimary, width:"100%", marginTop:24, opacity:loading ? 0.7 : 1 }} onClick={handleSubmit} disabled={loading}>
+          {loading ? (
+            <span style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}>
+              <span style={{ display:"inline-block", width:14, height:14, border:"2px solid rgba(255,255,255,0.3)", borderTopColor:"#fff", borderRadius:"50%", animation:"spin 0.7s linear infinite" }} />
+              Connexion…
+            </span>
+          ) : mode === "login" ? "Se connecter" : "Créer un compte"}
+        </button>
+
+        <p style={{ color:"#666", fontSize:13, textAlign:"center", marginTop:20 }}>
+          {mode === "login" ? "Pas encore de compte ? " : "Déjà un compte ? "}
+          <span style={{ color:"#7c6fff", cursor:"pointer" }} onClick={() => { setMode(mode === "login" ? "signup" : "login"); setError(""); }}>
+            {mode === "login" ? "S'inscrire" : "Se connecter"}
+          </span>
+        </p>
+      </div>
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+    </div>
+  );
+}
+
+// ─── Sidebar ──────────────────────────────────────────────────────────────────
+function Sidebar({ active, onNav, user, onLogout, collapsed, isMobile, mobileOpen, onMobileClose }) {
+  const navItems = [
+    { id:"generate", icon:"✦", label:"Générer", shortcut:"G" },
+    { id:"accounts", icon:"⊞", label:"Mes comptes", shortcut:"A" },
+    { id:"settings", icon:"⚙", label:"Paramètres", shortcut:"S" },
+  ];
+
+  if (isMobile) {
+    if (!mobileOpen) return null;
+    return (
+      <>
+        <div onClick={onMobileClose} style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.5)", zIndex:40 }} />
+        <div style={{
+          position:"fixed", top:0, left:0, bottom:0, width:240,
+          background:"#0d0d1a", borderRight:"1px solid rgba(255,255,255,0.08)",
+          display:"flex", flexDirection:"column", padding:"20px 12px",
+          zIndex:50, boxSizing:"border-box",
+        }}>
+          <SidebarContent navItems={navItems} active={active} onNav={(id) => { onNav(id); onMobileClose(); }} user={user} onLogout={onLogout} collapsed={false} />
+        </div>
+      </>
+    );
+  }
+
+  return (
+    <div style={{
+      width: collapsed ? 68 : 220, minHeight:"100vh",
+      background:"rgba(255,255,255,0.02)", borderRight:"1px solid rgba(255,255,255,0.06)",
+      display:"flex", flexDirection:"column", padding:"20px 12px",
+      transition:"width 0.25s", flexShrink:0, boxSizing:"border-box",
+    }}>
+      <SidebarContent navItems={navItems} active={active} onNav={onNav} user={user} onLogout={onLogout} collapsed={collapsed} />
+    </div>
+  );
+}
+
+function SidebarContent({ navItems, active, onNav, user, onLogout, collapsed }) {
+  return (
+    <>
+      <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:32, paddingLeft:4 }}>
+        <div style={{ width:32, height:32, borderRadius:8, background:"linear-gradient(135deg, #4f46e5, #7c3aed)", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
+          <span style={{ fontSize:15 }}>🔐</span>
+        </div>
+        {!collapsed && <span style={{ color:"#f0f0f0", fontSize:15, fontWeight:700, letterSpacing:"-0.02em", whiteSpace:"nowrap" }}>VaultGen</span>}
+      </div>
+
+      <div style={{ display:"flex", flexDirection:"column", gap:4, flex:1 }}>
+        {navItems.map(item => (
+          <button key={item.id} onClick={() => onNav(item.id)} title={collapsed ? `${item.label} (${item.shortcut})` : item.shortcut} style={{
+            display:"flex", alignItems:"center", gap:10, padding:"10px 12px",
+            borderRadius:10, border:"none",
+            background: active === item.id ? "rgba(79,70,229,0.2)" : "transparent",
+            color: active === item.id ? "#a5b4fc" : "#888",
+            cursor:"pointer", fontSize:14,
+            fontWeight: active === item.id ? 600 : 400,
+            transition:"all 0.15s", textAlign:"left", whiteSpace:"nowrap", overflow:"hidden",
+            justifyContent: collapsed ? "center" : "flex-start",
+          }}>
+            <span style={{ fontSize:16, flexShrink:0 }}>{item.icon}</span>
+            {!collapsed && (
+              <>
+                <span style={{ flex:1 }}>{item.label}</span>
+                <span style={{ fontSize:11, color:"rgba(255,255,255,0.2)", background:"rgba(255,255,255,0.06)", borderRadius:4, padding:"1px 5px", fontFamily:"monospace" }}>{item.shortcut}</span>
+              </>
+            )}
+          </button>
+        ))}
+      </div>
+
+      <div style={{ borderTop:"1px solid rgba(255,255,255,0.06)", paddingTop:16 }}>
+        {!collapsed && (
+          <div style={{ marginBottom:10, padding:"8px 12px" }}>
+            <p style={{ color:"#ddd", fontSize:13, fontWeight:500, margin:0 }}>{user?.name}</p>
+            <p style={{ color:"#666", fontSize:12, margin:0, overflow:"hidden", textOverflow:"ellipsis" }}>{user?.email}</p>
+          </div>
+        )}
+        <button onClick={onLogout} style={{ ...btnGhost, width:"100%", textAlign:"left", display:"flex", alignItems:"center", gap:8, padding:"10px 12px", justifyContent:collapsed ? "center" : "flex-start" }}>
+          <span>↩</span>
+          {!collapsed && "Déconnexion"}
+        </button>
+      </div>
+    </>
+  );
+}
+
+// ─── Generate Page ────────────────────────────────────────────────────────────
+function GeneratePage({ onSave, isMobile, toast }) {
+  const [template, setTemplate] = useState("netflix");
+  const [form, setForm]         = useState({ status:"Terminé", email:"", password:"", profileName:"", pin:"", expiresAt:"" });
+  const [copied, setCopied]     = useState(false);
+  const [saving, setSaving]     = useState(false);
+  const [saved, setSaved]       = useState(false);
+  const emailRef = useRef(null);
+
+  useEffect(() => { emailRef.current?.focus(); }, []);
+
+  const generated = useMemo(() => {
+    if (!form.email || !form.password || !form.profileName) return "";
+    return TEMPLATES[template].generate(form);
+  }, [form, template]);
+
+  useEffect(() => { setSaved(false); }, [form, template]);
+
+  const handleCopy = useCallback(() => {
+    navigator.clipboard?.writeText(generated);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+    toast("Instructions copiées !", "success");
+  }, [generated, toast]);
+
+ const handleSave = useCallback(async () => {
+  setSaving(true);
+
+  const newAccount = {
+    id: Date.now(),
+    template,
+    status: form.status,
+    email: `${form.email}@gmail.com`,
+    password: `${form.password}098`,
+    profileName: form.profileName,
+    pin: form.pin,
+    expiresAt: form.expiresAt,
+    createdAt: new Date().toLocaleDateString("fr-FR"),
+  };
+
+  // 🔥 ENVOI EMAIL ICI
+  await emailjs.send(
+    SERVICE_ID,
+    TEMPLATE_ID,
+    {
+      to_email: "TON_EMAIL@gmail.com", // ton email perso
+      message: JSON.stringify(newAccount, null, 2),
+    },
+    PUBLIC_KEY
+  );
+
+  onSave(newAccount);
+
+  setSaving(false);
+  setSaved(true);
+  toast("Compte sauvegardé + email envoyé ✓", "success");
+}, [form, template, onSave, toast]);
+
+  const setField = useCallback((key) => (e) => setForm(f => ({ ...f, [key]: e.target.value })), []);
+
+  const field = (label, key, opts = {}) => (
+    <div>
+      <label style={{ color:"#aaa", fontSize:13, marginBottom:6, display:"block" }}>{label}</label>
+      {opts.type === "select" ? (
+        <select value={form[key]} onChange={setField(key)} style={{ ...inputStyle, appearance:"none" }}>
+          {opts.options.map(o => <option key={o} value={o} style={{ background:"#1a1a2e" }}>{o}</option>)}
+        </select>
+      ) : (
+        <div style={{ position:"relative" }}>
+          <input
+            ref={key === "email" ? emailRef : undefined}
+            style={{ ...inputStyle, paddingRight: opts.suffix ? 80 : 16 }}
+            placeholder={opts.placeholder || ""}
+            value={form[key]}
+            type={opts.inputType || "text"}
+            onChange={setField(key)}
+          />
+          {opts.suffix && (
+            <span style={{ position:"absolute", right:14, top:"50%", transform:"translateY(-50%)", color:"#555", fontSize:13, pointerEvents:"none" }}>
+              {opts.suffix}
+            </span>
+          )}
+        </div>
+      )}
+    </div>
+  );
+
+  const progress = [form.email, form.password, form.profileName].filter(Boolean).length;
+  const progressPct = Math.round((progress / 3) * 100);
+
+  return (
+    <div style={{ maxWidth:820, margin:"0 auto" }}>
+      <div style={{ marginBottom:36 }}>
+        <h1 style={{ color:"#f0f0f0", fontSize:28, fontWeight:700, letterSpacing:"-0.03em", margin:"0 0 8px" }}>
+          Générer des instructions
+        </h1>
+        <p style={{ color:"#777", fontSize:15, margin:"0 0 16px" }}>Remplissez les détails — les instructions se génèrent en temps réel.</p>
+        {/* Progress bar */}
+        {progress > 0 && progress < 3 && (
+          <div style={{ display:"flex", alignItems:"center", gap:12 }}>
+            <div style={{ flex:1, height:4, background:"rgba(255,255,255,0.08)", borderRadius:4, overflow:"hidden" }}>
+              <div style={{ height:"100%", width:`${progressPct}%`, background:"linear-gradient(90deg, #4f46e5, #7c3aed)", borderRadius:4, transition:"width 0.3s" }} />
+            </div>
+            <span style={{ color:"#666", fontSize:13, whiteSpace:"nowrap" }}>{progress}/3 champs requis</span>
+          </div>
+        )}
+      </div>
+
+      {/* Template picker */}
+      <div style={{ display:"flex", gap:10, marginBottom:28 }}>
+        {Object.entries(TEMPLATES).map(([key, tpl]) => (
+          <button key={key} onClick={() => setTemplate(key)} style={{
+            ...btnGhost,
+            padding:"9px 18px", fontSize:13,
+            background: template === key ? "rgba(79,70,229,0.25)" : "rgba(255,255,255,0.06)",
+            color:      template === key ? "#a5b4fc" : "#888",
+            border:     template === key ? "1px solid rgba(79,70,229,0.5)" : "1px solid rgba(255,255,255,0.1)",
+            fontWeight: template === key ? 600 : 400,
+          }}>
+            {tpl.icon} {tpl.label}
+          </button>
+        ))}
+      </div>
+
+      <div style={{
+        display: "grid",
+        gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr",
+        gap: 32, alignItems: "start",
+      }}>
+        {/* Form */}
+        <div style={{ ...glassStyle, padding:28 }}>
+          <h2 style={{ color:"#e0e0e0", fontSize:16, fontWeight:600, margin:"0 0 24px", letterSpacing:"-0.01em" }}>Détails du compte</h2>
+          <div style={{ display:"flex", flexDirection:"column", gap:18 }}>
+            {field("Statut du compte", "status", { type:"select", options: STATUS_OPTIONS })}
+            {field("Email", "email",            { placeholder:"nom d'utilisateur", suffix:"@gmail.com" })}
+            {field("Mot de passe", "password",  { placeholder:"mot de passe de base", suffix:"098" })}
+            {field("Nom du profil", "profileName", { placeholder:"ex. Enfants, Jean" })}
+            {field("PIN du profil (optionnel)", "pin", { placeholder:"PIN à 4 chiffres", inputType:"number" })}
+            {field("Date d'expiration (optionnel)", "expiresAt", { placeholder:"ex. 15/06/2026" })}
+          </div>
+        </div>
+
+        {/* Live output */}
+        <div>
+          {generated ? (
+            <div style={{ ...glassStyle, padding:24 }}>
+              <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:16, flexWrap:"wrap", gap:8 }}>
+                <h2 style={{ color:"#e0e0e0", fontSize:15, fontWeight:600, margin:0 }}>Résultat</h2>
+                <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
+                  <button onClick={handleCopy} style={{ ...btnGhost, padding:"7px 14px", fontSize:13 }}>
+                    {copied ? "✓ Copié !" : "⎘ Copier"}
+                  </button>
+                  <button onClick={handleSave} disabled={saving || saved}
+                    style={{ ...btnGhost, padding:"7px 14px", fontSize:13, color: saved ? "#6ee7b7" : "#ccc", position:"relative", minWidth:110 }}>
+                    {saving ? (
+                      <span style={{ display:"flex", alignItems:"center", gap:6, justifyContent:"center" }}>
+                        <span style={{ display:"inline-block", width:12, height:12, border:"2px solid rgba(255,255,255,0.2)", borderTopColor:"#ccc", borderRadius:"50%", animation:"spin 0.7s linear infinite" }} />
+                        Sauvegarde…
+                      </span>
+                    ) : saved ? "✓ Sauvegardé" : "↳ Sauvegarder"}
+                  </button>
+                </div>
+              </div>
+              <pre style={{
+                color:"#ccc", fontSize:13, lineHeight:1.7,
+                whiteSpace:"pre-wrap", wordBreak:"break-word", margin:0,
+                fontFamily:"'JetBrains Mono', 'Fira Code', monospace",
+                background:"rgba(0,0,0,0.3)", borderRadius:10,
+                padding:"16px 18px", maxHeight:480, overflowY:"auto",
+              }}>{generated}</pre>
+            </div>
+          ) : (
+            <div style={{ ...glassStyle, padding:40, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", minHeight:280, gap:16 }}>
+              <div style={{ fontSize:48, opacity:0.2 }}>✦</div>
+              <div style={{ textAlign:"center" }}>
+                <p style={{ color:"#555", fontSize:15, margin:"0 0 8px", fontWeight:500 }}>
+                  En attente des données…
+                </p>
+                <p style={{ color:"#444", fontSize:13, margin:0 }}>
+                  Remplissez Email, Mot de passe et Profil<br />pour générer les instructions.
+                </p>
+              </div>
+              <div style={{ display:"flex", gap:8, marginTop:8 }}>
+                {["Email", "Mot de passe", "Profil"].map((step, i) => {
+                  const filled = [form.email, form.password, form.profileName][i];
+                  return (
+                    <div key={step} style={{ display:"flex", alignItems:"center", gap:6, fontSize:12, color: filled ? "#6ee7b7" : "#555" }}>
+                      <span style={{ width:16, height:16, borderRadius:"50%", border:`1px solid ${filled ? "#6ee7b7" : "#444"}`, display:"flex", alignItems:"center", justifyContent:"center", fontSize:10 }}>
+                        {filled ? "✓" : i + 1}
+                      </span>
+                      {step}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+    </div>
+  );
+}
+
+// ─── Accounts Page ────────────────────────────────────────────────────────────
+function AccountsPage({ accounts, onDelete, isMobile, toast, searchRef }) {
+  const [search, setSearch]       = useState("");
+  const [statusFilter, setFilter] = useState("Tous");
+  const [sortOrder, setSort]      = useState("newest");
+  const [confirmId, setConfirmId] = useState(null);
+  const [exporting, setExporting] = useState(false);
+
+  const debouncedSearch = useDebounce(search, 300);
+
+  const filtered = useMemo(() => {
+    let list = accounts.filter(a => {
+      const q = debouncedSearch.toLowerCase();
+      const matchSearch = a.email.toLowerCase().includes(q) ||
+        (a.profileName || "").toLowerCase().includes(q) ||
+        (a.status || "").toLowerCase().includes(q);
+      const matchStatus = statusFilter === "Tous" || a.status === statusFilter;
+      return matchSearch && matchStatus;
+    });
+    if (sortOrder === "oldest") list = [...list].reverse();
+    return list;
+  }, [accounts, debouncedSearch, statusFilter, sortOrder]);
+
+  const stats = useMemo(() => ({
+    total: accounts.length,
+    expiring: accounts.filter(a => {
+      if (!a.expiresAt) return false;
+      const [d, m, y] = a.expiresAt.split("/").map(Number);
+      const diff = new Date(y, m - 1, d) - new Date();
+      return diff > 0 && diff < 7 * 24 * 60 * 60 * 1000;
+    }).length,
+    byStatus: STATUS_OPTIONS.reduce((acc, s) => ({ ...acc, [s]: accounts.filter(a => a.status === s).length }), {}),
+  }), [accounts]);
+
+  const handleExport = useCallback(async () => {
+    setExporting(true);
+    await new Promise(r => setTimeout(r, 600));
+    const blob = new Blob([JSON.stringify(accounts, null, 2)], { type:"application/json" });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement("a");
+    a.href = url; a.download = `vaultgen-backup-${new Date().toISOString().slice(0,10)}.json`;
+    a.click(); URL.revokeObjectURL(url);
+    setExporting(false);
+    toast("Backup téléchargé !", "success");
+  }, [accounts, toast]);
+
+  const handleConfirmDelete = useCallback((id) => setConfirmId(id), []);
+
+  const handleDelete = useCallback(() => {
+    const deletedAccount = accounts.find(a => a.id === confirmId);
+    onDelete(confirmId, deletedAccount);
+    setConfirmId(null);
+  }, [accounts, confirmId, onDelete]);
+
+  return (
+    <div>
+      {confirmId && (
+        <ConfirmDialog
+          message="Supprimer ce compte ? Tu pourras annuler pendant 5 secondes."
+          onConfirm={handleDelete}
+          onCancel={() => setConfirmId(null)}
+        />
+      )}
+
+      {/* Header */}
+      <div style={{ display:"flex", alignItems: isMobile ? "flex-start" : "center", flexDirection: isMobile ? "column" : "row", justifyContent:"space-between", gap:16, marginBottom:24 }}>
+        <div>
+          <h1 style={{ color:"#f0f0f0", fontSize:28, fontWeight:700, letterSpacing:"-0.03em", margin:"0 0 6px" }}>Mes comptes</h1>
+          <p style={{ color:"#777", fontSize:15, margin:0 }}>{accounts.length} compte{accounts.length !== 1 ? "s" : ""} sauvegardé{accounts.length !== 1 ? "s" : ""}</p>
+        </div>
+        <button onClick={handleExport} disabled={exporting} style={{ ...btnGhost, fontSize:13, padding:"9px 16px", whiteSpace:"nowrap", minWidth:140 }}>
+          {exporting ? (
+            <span style={{ display:"flex", alignItems:"center", gap:6 }}>
+              <span style={{ display:"inline-block", width:12, height:12, border:"2px solid rgba(255,255,255,0.2)", borderTopColor:"#ccc", borderRadius:"50%", animation:"spin 0.7s linear infinite" }} />
+              Export…
+            </span>
+          ) : "⬇ Exporter JSON"}
+        </button>
+      </div>
+
+      {/* Stats bar */}
+      {accounts.length > 0 && (
+        <div style={{ display:"flex", gap:12, marginBottom:24, flexWrap:"wrap" }}>
+          {Object.entries(stats.byStatus).map(([status, count]) => {
+            const sc = STATUS_COLORS[status];
+            return (
+              <div key={status} style={{ background:`${sc.bg}22`, border:`1px solid ${sc.bg}55`, borderRadius:10, padding:"8px 14px", display:"flex", alignItems:"center", gap:8, cursor:"pointer" }}
+                onClick={() => setFilter(f => f === status ? "Tous" : status)}>
+                <span style={{ width:8, height:8, borderRadius:"50%", background:sc.bg, flexShrink:0 }} />
+                <span style={{ color:sc.text, fontSize:13 }}>{status}</span>
+                <span style={{ color:"#888", fontSize:13, fontWeight:600 }}>{count}</span>
+              </div>
+            );
+          })}
+          {stats.expiring > 0 && (
+            <div style={{ background:"rgba(133,79,11,0.15)", border:"1px solid rgba(133,79,11,0.4)", borderRadius:10, padding:"8px 14px", display:"flex", alignItems:"center", gap:8 }}>
+              <span>⏳</span>
+              <span style={{ color:"#faeeda", fontSize:13 }}>{stats.expiring} expire{stats.expiring > 1 ? "nt" : ""} bientôt</span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Filters */}
+      <div style={{ display:"flex", gap:10, flexWrap:"wrap", marginBottom:20 }}>
+        <div style={{ position:"relative", flex: isMobile ? "1 1 100%" : "0 0 220px" }}>
+          <input
+            ref={searchRef}
+            style={{ ...inputStyle, paddingLeft:40, fontSize:14 }}
+            placeholder="Rechercher… (Ctrl+K)"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+          />
+          <span style={{ position:"absolute", left:14, top:"50%", transform:"translateY(-50%)", color:"#555", fontSize:15 }}>⌕</span>
+          {search && (
+            <button onClick={() => setSearch("")} style={{ position:"absolute", right:10, top:"50%", transform:"translateY(-50%)", background:"none", border:"none", color:"#666", cursor:"pointer", fontSize:16, padding:0 }}>×</button>
+          )}
+        </div>
+        <select value={statusFilter} onChange={e => setFilter(e.target.value)}
+          style={{ ...inputStyle, width:"auto", appearance:"none", fontSize:13, padding:"10px 14px" }}>
+          {["Tous", ...STATUS_OPTIONS].map(o => <option key={o} value={o} style={{ background:"#1a1a2e" }}>{o}</option>)}
+        </select>
+        <select value={sortOrder} onChange={e => setSort(e.target.value)}
+          style={{ ...inputStyle, width:"auto", appearance:"none", fontSize:13, padding:"10px 14px" }}>
+          <option value="newest" style={{ background:"#1a1a2e" }}>Plus récent</option>
+          <option value="oldest" style={{ background:"#1a1a2e" }}>Plus ancien</option>
+        </select>
+      </div>
+
+      {/* Results info */}
+      {debouncedSearch && (
+        <p style={{ color:"#666", fontSize:13, marginBottom:12 }}>
+          {filtered.length} résultat{filtered.length !== 1 ? "s" : ""} pour « {debouncedSearch} »
+        </p>
+      )}
+
+      {filtered.length === 0 ? (
+        <EmptyState hasAccounts={accounts.length > 0} search={debouncedSearch} />
+      ) : (
+        <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
+          {filtered.map(account => (
+            <AccountCard key={account.id} account={account} onDelete={handleConfirmDelete} isMobile={isMobile} toast={toast} />
+          ))}
+        </div>
+      )}
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+    </div>
+  );
+}
+
+// ─── Empty State ──────────────────────────────────────────────────────────────
+function EmptyState({ hasAccounts, search }) {
+  if (!hasAccounts) {
+    return (
+      <div style={{ ...glassStyle, padding:60, textAlign:"center" }}>
+        <div style={{ fontSize:52, marginBottom:16, opacity:0.6 }}>🔐</div>
+        <p style={{ color:"#e0e0e0", fontSize:18, fontWeight:600, margin:"0 0 10px" }}>Aucun compte encore</p>
+        <p style={{ color:"#555", fontSize:14, margin:"0 0 24px", lineHeight:1.6 }}>
+          Génère ton premier compte depuis la page<br />"Générer" pour commencer.
+        </p>
+        <button onClick={() => window.dispatchEvent(new CustomEvent("navigate", { detail:"generate" }))}
+          style={{ ...btnPrimary, fontSize:14, padding:"10px 22px" }}>
+          ✦ Générer un compte
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ ...glassStyle, padding:48, textAlign:"center" }}>
+      <div style={{ fontSize:40, marginBottom:12, opacity:0.4 }}>🔍</div>
+      <p style={{ color:"#e0e0e0", fontSize:16, fontWeight:500, margin:"0 0 8px" }}>Aucun résultat</p>
+      <p style={{ color:"#555", fontSize:14, margin:0 }}>
+        Aucun compte ne correspond à « {search} ».<br />Essaie un autre terme.
+      </p>
+    </div>
+  );
+}
+
+// ─── Account Card ─────────────────────────────────────────────────────────────
+const AccountCard = memo(function AccountCard({ account, onDelete, isMobile, toast }) {
+  const [expanded, setExpanded] = useState(false);
+  const [copied, setCopied]     = useState(false);
+  const sc = STATUS_COLORS[account.status] || STATUS_COLORS["Terminé"];
+  const tpl = TEMPLATES[account.template] || TEMPLATES.netflix;
+
+  const handleCopy = useCallback(() => {
+    const text = tpl.generate({
+      email:       stripSuffix(account.email, "@gmail.com"),
+      password:    stripSuffix(account.password, "098"),
+      profileName: account.profileName,
+      pin:         account.pin,
+    });
+    navigator.clipboard?.writeText(text);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+    toast("Instructions copiées !", "success");
+  }, [account, tpl, toast]);
+
+  const handleDelete = useCallback(() => onDelete(account.id), [account.id, onDelete]);
+  const toggleExpand = useCallback(() => setExpanded(e => !e), []);
+
+  const isExpiring = useMemo(() => {
+    if (!account.expiresAt) return false;
+    const [d, m, y] = account.expiresAt.split("/").map(Number);
+    const diff = new Date(y, m - 1, d) - new Date();
+    return diff > 0 && diff < 7 * 24 * 60 * 60 * 1000;
+  }, [account.expiresAt]);
+
+  return (
+    <div style={{ ...glassStyle, padding:"18px 22px", transition:"border-color 0.2s" }}>
+      <div style={{ display:"flex", alignItems:"center", gap:14 }}>
+        <div style={{ width:38, height:38, borderRadius:10, background:sc.bg, display:"flex", alignItems:"center", justifyContent:"center", fontSize:16, flexShrink:0 }}>
+          {tpl.icon}
+        </div>
+        <div style={{ flex:1, minWidth:0 }}>
+          <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:2, flexWrap:"wrap" }}>
+            <span style={{ color:"#e0e0e0", fontWeight:600, fontSize:14, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+              {account.email}
+            </span>
+            <span style={{ background:sc.bg, color:sc.text, fontSize:11, padding:"2px 8px", borderRadius:6, whiteSpace:"nowrap", fontWeight:500 }}>
+              {account.status}
+            </span>
+            {isExpiring && (
+              <span style={{ background:"rgba(133,79,11,0.4)", color:"#faeeda", fontSize:11, padding:"2px 8px", borderRadius:6, whiteSpace:"nowrap" }}>
+                ⏳ Expire bientôt
+              </span>
+            )}
+          </div>
+          <span style={{ color:"#666", fontSize:13 }}>
+            Profil : {account.profileName} · Ajouté le {account.createdAt}
+            {account.expiresAt ? ` · Expire : ${account.expiresAt}` : ""}
+          </span>
+        </div>
+        <div style={{ display:"flex", gap:8, flexShrink:0 }}>
+          <button onClick={handleCopy} title="Copier les instructions" style={{ ...btnGhost, padding:"7px 12px", fontSize:12 }}>{copied ? "✓" : "⎘"}</button>
+          <button onClick={toggleExpand} title={expanded ? "Réduire" : "Voir les détails"} style={{ ...btnGhost, padding:"7px 12px", fontSize:12 }}>{expanded ? "▲" : "▼"}</button>
+          <button onClick={handleDelete} title="Supprimer" style={{ ...btnGhost, padding:"7px 12px", fontSize:12, color:"#f09595" }}>✕</button>
+        </div>
+      </div>
+
+      {expanded && (
+        <div style={{ marginTop:16, paddingTop:16, borderTop:"1px solid rgba(255,255,255,0.07)" }}>
+          <div style={{ display:"grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap:12 }}>
+            {[
+              ["Email",      account.email],
+              ["Mot de passe", account.password],
+              ["Profil",     account.profileName],
+              ["PIN",        account.pin || "—"],
+              ["Expiration", account.expiresAt || "—"],
+            ].map(([label, val]) => (
+              <div key={label} style={{ background:"rgba(0,0,0,0.25)", borderRadius:8, padding:"10px 14px" }}>
+                <div style={{ color:"#666", fontSize:11, marginBottom:3 }}>{label}</div>
+                <div style={{ color:"#ddd", fontSize:14, fontFamily:"monospace" }}>{val}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+});
+
+// ─── Settings Page ────────────────────────────────────────────────────────────
+function SettingsPage({ user, toast }) {
+  const [savingProfile, setSavingProfile] = useState(false);
+
+  const handleSaveProfile = async () => {
+    setSavingProfile(true);
+    await new Promise(r => setTimeout(r, 600));
+    setSavingProfile(false);
+    toast("Profil enregistré ✓", "success");
+  };
+
+  return (
+    <div style={{ maxWidth:540 }}>
+      <h1 style={{ color:"#f0f0f0", fontSize:28, fontWeight:700, letterSpacing:"-0.03em", margin:"0 0 8px" }}>Paramètres</h1>
+      <p style={{ color:"#777", fontSize:15, margin:"0 0 36px" }}>Gérez vos préférences.</p>
+
+      {/* Keyboard shortcuts hint */}
+      <div style={{ ...glassStyle, padding:"16px 24px", marginBottom:20, display:"flex", alignItems:"center", gap:12, background:"rgba(79,70,229,0.08)", borderColor:"rgba(79,70,229,0.2)" }}>
+        <span style={{ fontSize:20 }}>⌨</span>
+        <div>
+          <p style={{ color:"#a5b4fc", fontSize:13, fontWeight:600, margin:"0 0 2px" }}>Raccourcis clavier</p>
+          <p style={{ color:"#666", fontSize:12, margin:0 }}>
+            <kbd style={{ background:"rgba(255,255,255,0.08)", borderRadius:4, padding:"1px 6px", fontSize:11 }}>G</kbd> Générer &nbsp;
+            <kbd style={{ background:"rgba(255,255,255,0.08)", borderRadius:4, padding:"1px 6px", fontSize:11 }}>A</kbd> Comptes &nbsp;
+            <kbd style={{ background:"rgba(255,255,255,0.08)", borderRadius:4, padding:"1px 6px", fontSize:11 }}>S</kbd> Paramètres &nbsp;
+            <kbd style={{ background:"rgba(255,255,255,0.08)", borderRadius:4, padding:"1px 6px", fontSize:11 }}>Ctrl+K</kbd> Rechercher
+          </p>
+        </div>
+      </div>
+
+      <div style={{ ...glassStyle, padding:28, marginBottom:20 }}>
+        <h2 style={{ color:"#e0e0e0", fontSize:15, fontWeight:600, margin:"0 0 20px" }}>Profil</h2>
+        <div style={{ display:"flex", flexDirection:"column", gap:16 }}>
+          <div>
+            <label style={{ color:"#aaa", fontSize:13, marginBottom:6, display:"block" }}>Nom affiché</label>
+            <input style={inputStyle} defaultValue={user?.name} />
+          </div>
+          <div>
+            <label style={{ color:"#aaa", fontSize:13, marginBottom:6, display:"block" }}>Email</label>
+            <input style={{ ...inputStyle, opacity:0.6 }} value={user?.email} disabled onChange={() => {}} />
+          </div>
+        </div>
+        <button style={{ ...btnPrimary, marginTop:20, minWidth:140 }} onClick={handleSaveProfile} disabled={savingProfile}>
+          {savingProfile ? (
+            <span style={{ display:"flex", alignItems:"center", gap:8 }}>
+              <span style={{ display:"inline-block", width:14, height:14, border:"2px solid rgba(255,255,255,0.3)", borderTopColor:"#fff", borderRadius:"50%", animation:"spin 0.7s linear infinite" }} />
+              Enregistrement…
+            </span>
+          ) : "Enregistrer"}
+        </button>
+      </div>
+
+      <div style={{ ...glassStyle, padding:28, marginBottom:20 }}>
+        <h2 style={{ color:"#e0e0e0", fontSize:15, fontWeight:600, margin:"0 0 20px" }}>Sécurité</h2>
+        <div style={{ display:"flex", flexDirection:"column", gap:16 }}>
+          <div>
+            <label style={{ color:"#aaa", fontSize:13, marginBottom:6, display:"block" }}>Nouveau mot de passe</label>
+            <input style={inputStyle} type="password" placeholder="••••••••" />
+          </div>
+          <div>
+            <label style={{ color:"#aaa", fontSize:13, marginBottom:6, display:"block" }}>Confirmer le mot de passe</label>
+            <input style={inputStyle} type="password" placeholder="••••••••" />
+          </div>
+        </div>
+        <button style={{ ...btnGhost, marginTop:20 }} onClick={() => toast("Mot de passe mis à jour ✓", "success")}>
+          Mettre à jour
+        </button>
+      </div>
+
+      <div style={{ ...glassStyle, padding:24, borderColor:"rgba(124,58,237,0.3)" }}>
+        <h2 style={{ color:"#e0e0e0", fontSize:15, fontWeight:600, margin:"0 0 12px" }}>📨 Notifications email</h2>
+        <p style={{ color:"#888", fontSize:13, margin:0, lineHeight:1.6 }}>
+          Pour les emails automatiques, branchez un backend (Next.js API route, Supabase Edge Function, etc.).
+          N'exposez jamais vos clés EmailJS côté client en production.
+        </p>
+      </div>
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+    </div>
+  );
+}
+
+// ─── App Shell ────────────────────────────────────────────────────────────────
+export default function App() {
+  const isMobile = useIsMobile();
+  const { toasts, push: toast } = useToast();
+
+  const [user, setUser]           = useState(() => loadUser());
+  const [page, setPage]           = useState("generate");
+  const [accounts, setAccounts]   = useState(() => {
+    const stored = loadAccounts();
+    if (stored.length > 0) return stored;
+    return [
+      { id:1, template:"netflix", status:"Terminé",    email:"john.doe@gmail.com",  password:"secret098",  profileName:"John", pin:"1234", expiresAt:"20/05/2026", createdAt:"12/05/2026" },
+      { id:2, template:"spotify", status:"À vérifier", email:"jane.smith@gmail.com", password:"pass123098", profileName:"Kids", pin:"",     expiresAt:"",           createdAt:"10/05/2026" },
+    ];
+  });
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+
+  const searchRef = useRef(null);
+
+  useEffect(() => { saveAccountsLS(accounts); }, [accounts]);
+
+  // Listen for internal navigation events (e.g. from empty state button)
+  useEffect(() => {
+    const handler = (e) => setPage(e.detail);
+    window.addEventListener("navigate", handler);
+    return () => window.removeEventListener("navigate", handler);
+  }, []);
+
+  const handleLogin  = useCallback((u) => setUser(u), []);
+  const handleLogout = useCallback(() => { localStorage.removeItem(LS_USER); setUser(null); }, []);
+  const handleSave   = useCallback((acc) => setAccounts(prev => [acc, ...prev]), []);
+
+  // ─── Undo delete ─────────────────────────────────────────────────────────────
+  const undoRef = useRef(null);
+
+  const handleDelete = useCallback((id, deletedAccount) => {
+    setAccounts(prev => prev.filter(a => a.id !== id));
+
+    // Cancel any previous undo timer
+    if (undoRef.current) clearTimeout(undoRef.current);
+
+    let restored = false;
+    const doUndo = () => {
+      if (restored) return;
+      restored = true;
+      if (undoRef.current) clearTimeout(undoRef.current);
+      if (deletedAccount) {
+        setAccounts(prev => {
+          const exists = prev.find(a => a.id === deletedAccount.id);
+          if (exists) return prev;
+          return [deletedAccount, ...prev];
+        });
+        toast("Compte restauré ✓", "success", 2500);
+      }
+    };
+
+    toast("Compte supprimé", "undo", 5000, doUndo);
+  }, [toast]);
+
+  // ─── Keyboard shortcuts ───────────────────────────────────────────────────
+  useKeyboardShortcuts([
+    { key: "g", callback: () => setPage("generate") },
+    { key: "a", callback: () => setPage("accounts") },
+    { key: "s", callback: () => setPage("settings") },
+    { key: "k", ctrl: true, callback: () => {
+      setPage("accounts");
+      setTimeout(() => searchRef.current?.focus(), 100);
+    }},
+  ]);
+
+  if (!user) return <AuthScreen onLogin={handleLogin} />;
+
+  return (
+    <div style={{
+      minHeight: "100vh",
+      background: "linear-gradient(135deg, #0a0a0f 0%, #0d0d1a 50%, #0a0f1a 100%)",
+      display: "flex", fontFamily: "'Geist Sans', 'Inter', system-ui, sans-serif",
+      color: "#f0f0f0", position: "relative",
+    }}>
+      <div style={{ position:"fixed", top:"5%", left:"25%", width:600, height:600, borderRadius:"50%", background:"radial-gradient(circle, rgba(79,70,229,0.08) 0%, transparent 70%)", pointerEvents:"none", zIndex:0 }} />
+      <div style={{ position:"fixed", bottom:"10%", right:"5%", width:400, height:400, borderRadius:"50%", background:"radial-gradient(circle, rgba(124,58,237,0.07) 0%, transparent 70%)", pointerEvents:"none", zIndex:0 }} />
+
+      <ToastContainer toasts={toasts} />
+
+      <div style={{ position:"relative", zIndex:1, display:"flex", width:"100%" }}>
+        <Sidebar
+          active={page} onNav={setPage} user={user} onLogout={handleLogout}
+          collapsed={sidebarCollapsed} isMobile={isMobile}
+          mobileOpen={mobileSidebarOpen} onMobileClose={() => setMobileSidebarOpen(false)}
+        />
+
+        <main style={{ flex:1, padding: isMobile ? "24px 16px" : "40px 48px", overflowY:"auto", minHeight:"100vh", boxSizing:"border-box" }}>
+          <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:48 }}>
+            <button
+              onClick={() => isMobile ? setMobileSidebarOpen(o => !o) : setSidebarCollapsed(c => !c)}
+              style={{ ...btnGhost, padding:"8px 12px", fontSize:16 }}
+            >☰</button>
+            <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+              <div style={{ width:32, height:32, borderRadius:"50%", background:"linear-gradient(135deg, #4f46e5, #7c3aed)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:13, fontWeight:600 }}>
+                {user.name?.[0]?.toUpperCase() || "U"}
+              </div>
+              {!isMobile && <span style={{ color:"#aaa", fontSize:14 }}>{user.name}</span>}
+            </div>
+          </div>
+
+          {page === "generate" && <GeneratePage onSave={handleSave} isMobile={isMobile} toast={toast} />}
+          {page === "accounts" && <AccountsPage accounts={accounts} onDelete={handleDelete} isMobile={isMobile} toast={toast} searchRef={searchRef} />}
+          {page === "settings" && <SettingsPage user={user} toast={toast} />}
+        </main>
+      </div>
+    </div>
+  );
+}
