@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VaultGen - Gestionnaire de Comptes</title>
+    
+    <!-- 1. CHARGEMENT DE REACT & BABEL DEPUIS UN CDN -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <!-- 2. CHARGEMENT D'EMAILJS DEPUIS UN CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js"></script>
+
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: #0a0a0f;
+            color: #f0f0f0;
+            font-family: 'Inter', system-ui, sans-serif;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Le point d'ancrage de notre application React -->
+    <div id="root"></div>
+
+    <!-- CONFIGURATION SCRIPT EN TYPE "TEXT/BABEL" POUR COMPILER LE JSX -->
+    <script type="text/babel">
+        // Extraction des hooks depuis l'objet global React
+        const { useState, useEffect, useCallback, useMemo, useRef, memo } = React;
+
+        // Initialisation d'EmailJS globale
+        emailjs.init("kFK9eBXqTg441PxLX");
+
+        // ─── Constants ────────────────────────────────────────────────────────
+        const SERVICE_ID = "service_169phpn";
+        const TEMPLATE_ID = "template_8qnnrru";
+        const PUBLIC_KEY  = "kFK9eBXqTg441PxLX";
+        const STATUS_OPTIONS = ["Terminé", "À vérifier", "Amna"];
+
+        const STATUS_COLORS = {
+          "Terminé":    { bg: "#0f6e56", text: "#e1f5ee" },
+          "À vérifier": { bg: "#854f0b", text: "#faeeda" },
+          "Amna":       { bg: "#533ab7", text: "#eeedfe" },
+        };
+
+        const TEMPLATES = {
+          netflix: {
+            label: "Netflix",
+            icon: "📺",
+            generate: ({ email, password, profileName, pin }) => {
+              const fullEmail    = `${email}@gmail.com`;
+              const fullPassword = `${password}098`;
+              const pinLine      = pin
+                ? `\n8- Ensuite, il demandera un PIN :\n\nUser-Pin : ${pin}\n`
+                : "";
+              return `NB : 1 profil = 1 appareil ⚠️
+
+1- Installe l'application Netflix
+
+2- Ouvre l'application
+
+3- Appuie sur le bouton "Sign in" ou "S'identifier"
+
+4- Entre l'email du compte :
+
+Email : ${fullEmail}
+
+Puis appuie sur Continuer.
+
+5- Quand Netflix demande un code d'identification :
+Appuie sur « Obtenir de l'aide » puis sur « Utiliser le mot de passe ».
+
+6- Entre le mot de passe :
+
+Mot de passe 🔐 : ${fullPassword}
+
+7- Sélectionne le profil :
+
+Profil : ${profileName}
+${pinLine}
+Tu peux commencer !
+
+🚫 Fin d'abonnement
+
+---
+
+🔔 Renouvelle avant la date limite pour conserver ton compte actuel.`;
+            },
+          },
+          spotify: {
+            label: "Spotify",
+            icon: "🎵",
+            generate: ({ email, password }) => {
+              return `1- Installe l'application Spotify
+
+2- Appuie sur "Se connecter"
+
+3- Connecte-toi avec :
+
+Email : ${email}@gmail.com
+Mot de passe 🔐 : ${password}098
+
+Tu peux écouter !
+
+🚫 Fin d'abonnement
+
+---
+
+🔔 Renouvelle avant la date limite.`;
+            },
+          },
+        };
+
+        // ─── Helpers ──────────────────────────────────────────────────────────
+        const stripSuffix = (value = "", suffix = "") =>
+          value.endsWith(suffix) ? value.slice(0, -suffix.length) : value;
+
+        // ─── localStorage helpers ─────────────────────────────────────────────
+        const LS_ACCOUNTS = "vaultgen_accounts";
+        const LS_USER     = "vaultgen_user";
+
+        const loadAccounts = () => {
+          try { const r = localStorage.getItem(LS_ACCOUNTS); return r ? JSON.parse(r) : []; }
+          catch { return []; }
+        };
+        const saveAccountsLS = (a) => {
+          try { localStorage.setItem(LS_ACCOUNTS, JSON.stringify(a)); } catch {}
+        };
+        const loadUser = () => {
+          try { const r = localStorage.getItem(LS_USER); return r ? JSON.parse(r) : null; }
+          catch { return null; }
+        };
+
+        // ─── Styles ───────────────────────────────────────────────────────────
+        const glassStyle = {
+          background:    "rgba(255,255,255,0.04)",
+          border:        "1px solid rgba(255,255,255,0.08)",
+          borderRadius:  "16px",
+          backdropFilter:"blur(20px)",
+        };
+
+        const inputStyle = {
+          width:        "100%",
+          background:   "rgba(255,255,255,0.06)",
+          border:       "1px solid rgba(255,255,255,0.1)",
+          borderRadius: "10px",
+          padding:      "12px 16px",
+          color:        "#f0f0f0",
+          fontSize:     "15px",
+          outline:      "none",
+          transition:   "border-color 0.2s, box-shadow 0.2s",
+          boxSizing:    "border-box",
+        };
+
+        const btnPrimary = {
+          background:    "linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%)",
+          border:        "none",
+          borderRadius:  "10px",
+          color:         "#fff",
+          fontSize:      "15px",
+          fontWeight:    600,
+          padding:       "12px 28px",
+          cursor:        "pointer",
+          transition:    "opacity 0.2s, transform 0.15s",
+          letterSpacing: "0.01em",
+        };
+
+        const btnGhost = {
+          background:   "rgba(255,255,255,0.06)",
+          border:       "1px solid rgba(255,255,255,0.1)",
+          borderRadius: "10px",
+          color:        "#ccc",
+          fontSize:     "14px",
+          padding:      "10px 20px",
+          cursor:       "pointer",
+          transition:   "background 0.2s",
+        };
+
+        // ─── Hook: responsive ─────────────────────────────────────────────────
+        function useIsMobile(bp = 768) {
+          const [v, setV] = useState(() => window.innerWidth < bp);
+          useEffect(() => {
+            const h = () => setV(window.innerWidth < bp);
+            window.addEventListener("resize", h);
+            return () => window.removeEventListener("resize", h);
+          }, [bp]);
+          return v;
+        }
+
+        // ─── Hook: debounce ───────────────────────────────────────────────────
+        function useDebounce(value, delay = 300) {
+          const [debounced, setDebounced] = useState(value);
+          useEffect(() => {
+            const t = setTimeout(() => setDebounced(value), delay);
+            return () => clearTimeout(t);
+          }, [value, delay]);
+          return debounced;
+        }
+
+        // ─── Toast system (with undo support) ────────────────────────────────
+        function ToastContainer({ toasts }) {
+          return (
+            <div style={{
+              position: "fixed", bottom: 24, right: 24, zIndex: 9999,
+              display: "flex", flexDirection: "column", gap: 10, pointerEvents: "none",
+            }}>
+              {toasts.map(t => (
+                <div key={t.id} style={{
+                  background:   t.type === "error" ? "rgba(226,75,74,0.95)" : t.type === "warning" ? "rgba(133,79,11,0.95)" : t.type === "undo" ? "rgba(30,30,50,0.97)" : "rgba(15,110,86,0.95)",
+                  border:       "1px solid rgba(255,255,255,0.15)",
+                  borderRadius: 12,
+                  padding:      "12px 18px",
+                  color:        "#fff",
+                  fontSize:     14,
+                  fontWeight:   500,
+                  minWidth:     220,
+                  boxShadow:    "0 8px 32px rgba(0,0,0,0.4)",
+                  animation:    "slideIn 0.25s ease",
+                  display:      "flex", alignItems: "center", gap: 10,
+                  pointerEvents: t.onUndo ? "all" : "none",
+                }}>
+                  <span style={{ fontSize: 16 }}>{t.type === "error" ? "⚠" : t.type === "warning" ? "⏳" : t.type === "undo" ? "🗑" : "✓"}</span>
+                  <span style={{ flex: 1 }}>{t.message}</span>
+                  {t.onUndo && (
+                    <button
+                      onClick={t.onUndo}
+                      style={{ background: "rgba(255,255,255,0.15)", border: "1px solid rgba(255,255,255,0.25)", borderRadius: 6, color: "#fff", fontSize: 13, padding: "4px 10px", cursor: "pointer", fontWeight: 600, whiteSpace: "nowrap" }}
+                    >
+                      Annuler
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          );
+        }
+
+        function useToast() {
+          const [toasts, setToasts] = useState([]);
+          const dismiss = useCallback((id) => {
+            setToasts(prev => prev.filter(t => t.id !== id));
+          }, []);
+          const push = useCallback((message, type = "success", duration = 3000, onUndo = null) => {
+            const id = Date.now() + Math.random();
+            setToasts(prev => [...prev, { id, message, type, onUndo }]);
+            setTimeout(() => dismiss(id), duration);
+          }, [dismiss]);
+          return { toasts, push, dismiss };
+        }
+
+        // ─── Auth Screen ──────────────────────────────────────────────────────
+        function AuthScreen({ onLogin }) {
+          const [mode, setMode]         = useState("login");
+          const [email, setEmail]       = useState("");
+          const [password, setPassword] = useState("");
+          const [name, setName]         = useState("");
+          const [loading, setLoading]   = useState(false);
+          const [error, setError]       = useState("");
+
+          const handleSubmit = async () => {
+            if (!email || !password) { setError("Veuillez remplir tous les champs."); return; }
+            setLoading(true); setError("");
+            await new Promise(r => setTimeout(r, 700));
+            setLoading(false);
+            const userData = { email, name: name || email.split("@")[0] };
+            localStorage.setItem(LS_USER, JSON.stringify(userData));
+            onLogin(userData);
+          };
+
+          return (
+            <div style={{
+              minHeight: "100vh",
+              background: "linear-gradient(135deg, #0a0a0f 0%, #0d0d1a 40%, #0a0f1a 100%)",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              position: "relative", overflow: "hidden",
+            }}>
+              <div style={{ ...glassStyle, padding:"48px 40px", width:"100%", maxWidth:420, zIndex:1, margin:"0 16px" }}>
+                <h1 style={{ color:"#f0f0f0", fontSize:26, fontWeight:700, margin:"0 0 6px" }}>
+                  {mode === "login" ? "Bienvenue" : "Créer un compte"}
+                </h1>
+                <p style={{ color:"#888", fontSize:14, margin:"0 0 32px" }}>
+                  {mode === "login" ? "Connectez-vous pour gérer vos comptes" : "Commencez à gérer vos identifiants"}
+                </p>
+
+                {error && <div style={{ color:"#f09595", marginBottom:10 }}>{error}</div>}
+
+                <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
+                  {mode === "signup" && (
+                    <div>
+                      <label style={{ color:"#aaa", fontSize:13 }}>Nom complet</label>
+                      <input style={inputStyle} placeholder="Votre nom" value={name} onChange={e => setName(e.target.value)} />
+                    </div>
+                  )}
+                  <div>
+                    <label style={{ color:"#aaa", fontSize:13 }}>Email</label>
+                    <input style={inputStyle} type="email" placeholder="vous@exemple.com" value={email} onChange={e => setEmail(e.target.value)} />
+                  </div>
+                  <div>
+                    <label style={{ color:"#aaa", fontSize:13 }}>Mot de passe</label>
+                    <input style={inputStyle} type="password" placeholder="••••••••" value={password} onChange={e => setPassword(e.target.value)} />
+                  </div>
+                </div>
+
+                <button style={{ ...btnPrimary, width:"100%", marginTop:24 }} onClick={handleSubmit} disabled={loading}>
+                  {loading ? "Connexion…" : mode === "login" ? "Se connecter" : "Créer un compte"}
+                </button>
+                <p style={{ color:"#666", fontSize:13, textAlign:"center", marginTop:20 }}>
+                  <span style={{ color:"#7c6fff", cursor:"pointer" }} onClick={() => setMode(mode === "login" ? "signup" : "login")}>
+                    {mode === "login" ? "S'inscrire" : "Se connecter"}
+                  </span>
+                </p>
+              </div>
+            </div>
+          );
+        }
+
+        // ─── Generate Page ────────────────────────────────────────────────────
+        function GeneratePage({ onSave, isMobile, toast }) {
+          const [template, setTemplate] = useState("netflix");
+          const [form, setForm]         = useState({ status:"Terminé", email:"", password:"", profileName:"", pin:"", expiresAt:"" });
+          const [copied, setCopied]     = useState(false);
+          const [saving, setSaving]     = useState(false);
+          const [saved, setSaved]       = useState(false);
+          const emailRef = useRef(null);
+
+          useEffect(() => { emailRef.current?.focus(); }, []);
+
+          const generated = useMemo(() => {
+            if (!form.email || !form.password || !form.profileName) return "";
+            return TEMPLATES[template].generate(form);
+          }, [form, template]);
+
+          useEffect(() => { setSaved(false); }, [form, template]);
+
+          const handleCopy = useCallback(() => {
+            navigator.clipboard?.writeText(generated);
+            setCopied(true);
+            setTimeout(() => setCopied(false), 2000);
+            toast("Instructions copiées !", "success");
+          }, [generated, toast]);
+
+          const handleSave = useCallback(async () => {
+            setSaving(true);
+            const newAccount = {
+              id: Date.now(),
+              template,
+              status: form.status,
+              email: `${form.email}@gmail.com`,
+              password: `${form.password}098`,
+              profileName: form.profileName,
+              pin: form.pin,
+              expiresAt: form.expiresAt,
+              createdAt: new Date().toLocaleDateString("fr-FR"),
+            };
+
+            try {
+              await emailjs.send(SERVICE_ID, TEMPLATE_ID, {
+                to_email: "TON_EMAIL@gmail.com",
+                message: JSON.stringify(newAccount, null, 2),
+              });
+              onSave(newAccount);
+              setSaved(true);
+              toast("Compte sauvegardé + email envoyé ✓", "success");
+            } catch (err) {
+              toast("Erreur lors de l'envoi de l'email.", "error");
+            } finally {
+              setSaving(false);
+            }
+          }, [form, template, onSave, toast]);
+
+          const setField = useCallback((key) => (e) => setForm(f => ({ ...f, [key]: e.target.value })), []);
+
+          return (
+            <div style={{ padding: 20, maxWidth: 800, margin: "0 auto" }}>
+              <h2>Générer des instructions</h2>
+              <div style={{ display: "flex", gap: 10, marginBottom: 20 }}>
+                {Object.keys(TEMPLATES).map(k => (
+                    <button key={k} style={btnGhost} onClick={() => setTemplate(k)}>{TEMPLATES[k].label}</button>
+                ))}
+              </div>
+              <div style={{ ...glassStyle, padding: 20, display: "flex", flexDirection: "column", gap: 15 }}>
+                <input ref={emailRef} style={inputStyle} placeholder="Email (sans @gmail.com)" value={form.email} onChange={setField("email")} />
+                <input style={inputStyle} placeholder="Mot de passe" value={form.password} onChange={setField("password")} />
+                <input style={inputStyle} placeholder="Nom du profil" value={form.profileName} onChange={setField("profileName")} />
+                <input style={inputStyle} placeholder="PIN (optionnel)" value={form.pin} onChange={setField("pin")} />
+                <input style={inputStyle} placeholder="Date d'expiration" value={form.expiresAt} onChange={setField("expiresAt")} />
+                
+                {generated && (
+                    <div>
+                        <pre style={{ background: "#000", padding: 15, borderRadius: 8, color: "#fff" }}>{generated}</pre>
+                        <button style={btnPrimary} onClick={handleCopy}>{copied ? "Copié !" : "Copier"}</button>
+                        <button style={{ ...btnPrimary, marginLeft: 10 }} onClick={handleSave} disabled={saving}>{saving ? "Envoi..." : "Sauvegarder"}</button>
+                    </div>
+                )}
+              </div>
+            </div>
+          );
+        }
+
+        // ─── MAIN APPLICATION CONTAINER ──────────────────────────────────────────
+        function App() {
+          const [user, setUser] = useState(loadUser);
+          const [accounts, setAccounts] = useState(loadAccounts);
+          const { toasts, push } = useToast();
+
+          const handleSaveAccount = (newAcc) => {
+             const updated = [newAcc, ...accounts];
+             setAccounts(updated);
+             saveAccountsLS(updated);
+          };
+
+          if (!user) {
+            return <AuthScreen onLogin={setUser} />;
+          }
+
+          return (
+            <div style={{ minHeight: "100vh", padding: "20px" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 30 }}>
+                 <span>Connecté en tant que : <strong>{user.name}</strong></span>
+                 <button style={btnGhost} onClick={() => { localStorage.removeItem(LS_USER); setUser(null); }}>Déconnexion</button>
+              </div>
+              <GeneratePage onSave={handleSaveAccount} isMobile={false} toast={push} />
+              <ToastContainer toasts={toasts} />
+            </div>
+          );
+        }
+
+        // Rendu final dans le HTML via React 18
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
